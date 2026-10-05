@@ -4,54 +4,55 @@ using SPTarkov.Server.Core.Models.Common;
 using SPTarkov.Server.Core.Models.Eft.Common;
 using SPTarkov.Server.Core.Models.Eft.Common.Tables;
 using SPTarkov.Server.Core.Models.Spt.Mod;
-using SPTarkov.Server.Core.Models.Utils;
-using SPTarkov.Server.Core.Services;
-using SPTarkov.Server.Core.Services.Mod;
+using SPTarkov.Common.Models.Logging;
+using SPTarkov.Server.Core.Models.Spt.Tables;
+using SPTarkov.Server.Core.Services.Modding.Custom;
 using SPTarkov.Server.Core.Utils.Cloners;
 using SPTarkov.Server.Core.Helpers;
+using SPTarkov.Server.Core.Helpers.Profile;
+using SPTarkov.Server.Core.Helpers.Server;
 using SPTarkov.Server.Core.Utils;
 using System.Text.Json.Serialization;
 using System.Reflection;
 using SPTarkov.Server.Core.Loaders;
 using SPTarkov.Server.Core.Models.Eft.Hideout;
 using SPTarkov.Server.Core.Models.Enums;
-using SPTarkov.Server.Core.Models.Spt.Server;
 
 namespace MassivesoftCore;
 
-public record ModMetadata : AbstractModMetadata
+public record ModMetadata : IModMetadata
 {
-    public override string ModGuid { get; init; } = "com.massivesoft.massivesoftcore";
-    public override string Name { get; init; } = "MassivesoftCore";
-    public override string Author { get; init; } = "Massivesoft";
-    public override List<string>? Contributors { get; init; }
-    public override SemanticVersioning.Version Version { get; init; } = new("1.0.2");
-    public override SemanticVersioning.Range SptVersion { get; init; } = new("~4.0.0");
-
-
-    public override List<string>? Incompatibilities { get; init; }
-    public override Dictionary<string, SemanticVersioning.Range>? ModDependencies { get; init; }
-    public override string? Url { get; init; }
-    public override bool? IsBundleMod { get; init; }
-    public override string? License { get; init; } = "MIT";
+    public string ModGuid { get; init; } = "com.massivesoft.massivesoftcore";
+    public string Name { get; init; } = "MassivesoftCore";
+    public string Author { get; init; } = "Massivesoft";
+    public bool HasPrepatcher { get; init; }
+    public List<string>? Contributors { get; init; }
+    public SemanticVersioning.Version Version { get; init; } = new("1.0.2");
+    public SemanticVersioning.Range SptVersion { get; init; } = new("~4.1.0");
+    public List<string>? Incompatibilities { get; init; }
+    public Dictionary<string, SemanticVersioning.Range>? ModDependencies { get; init; }
+    public string? Url { get; init; }
+    public string License { get; init; } = "MIT";
 }
-[Injectable(TypePriority = OnLoadOrder.PostDBModLoader)]
+[Injectable(TypePriority = OnLoadOrder.Preload)]
 public class MassivesoftCoreClassLoading(ISptLogger<MassivesoftCoreClassLoading> logger,
 MassivesoftCoreClass massivesoftCore) : IOnLoad
 {
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         logger.Info("Massivesoft Core Loaded");
         massivesoftCore.OnLoad();
         return Task.CompletedTask;
     }
 }
-[Injectable(TypePriority = OnLoadOrder.PostDBModLoader + 10)]
+[Injectable(TypePriority = OnLoadOrder.Preload + 10)]
 public class MassivesoftCoreClassAfterSubModLoaded(ISptLogger<MassivesoftCoreClassLoading> logger,
 MassivesoftCoreClass massivesoftCore) : IOnLoad
 {
-    public Task OnLoad()
+    public Task OnLoadAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         logger.Info("Massivesoft Core Post Load Process");
         massivesoftCore.PostLoad();
         return Task.CompletedTask;
@@ -61,21 +62,21 @@ MassivesoftCoreClass massivesoftCore) : IOnLoad
 public class MassivesoftCoreClass
 {
     private readonly ISptLogger<MassivesoftCoreClass> _logger;
-    private readonly DatabaseService _databaseService;
     private readonly CustomItemService _customItemService;
     private readonly ICloner _cloner;
     private readonly ModHelper _modHelper;
-    private readonly JsonUtil _jsonUtil;
-    private readonly FileUtil _fileUtil;
-    private readonly HandbookHelper _handbookHelper;
+    private readonly TemplateTable _templateTable;
+    private readonly TradersTable _tradersTable;
+    private readonly GlobalTable _globalTable;
+    private readonly HideoutTable _hideoutTable;
+    private readonly LocaleTable _localeTable;
     public Dictionary<MongoId, TemplateItem>? DBItems { get; set; }
-    public Dictionary<MongoId, Trader>? DBTraders { get; set; }
-    public Globals? DBGlobals { get; set; }
+    public GlobalTable? DBGlobals { get; set; }
     public Dictionary<MongoId, Preset>? DBPreset { get; set; }
     public List<HandbookItem>? DBHandbook { get; set; }
     public Dictionary<string, IEnumerable<Buff>>? DBBuff { get; set; }
     public List<HideoutProduction>? DBCrafts { get; set; }
-    public LocaleBase? DBlocales { get; set; }
+    public LocaleTable? DBlocales { get; set; }
     public MongoId DefaultTrader { get; set; } = new MongoId("5a7c2eca46aef81a7ca2145d");
     public string pathToMod = "";
     public List<MongoId> ListLoadedItem = new List<MongoId>();
@@ -86,28 +87,37 @@ public class MassivesoftCoreClass
     public string strConfilctingItems = "ConfilctingItems";
     public string strAmmo = "Ammo";
     public MongoId playerInventoryId = new MongoId("55d7217a4bdc2d86028b456d");
-    public MassivesoftCoreClass(ISptLogger<MassivesoftCoreClass> logger, DatabaseService databaseService, CustomItemService customItemService, ICloner cloner, ModHelper modHelper, JsonUtil jsonUtil, FileUtil fileUtil, HandbookHelper handbookHelper)
+    public MassivesoftCoreClass(
+        ISptLogger<MassivesoftCoreClass> logger,
+        TemplateTable templateTable,
+        TradersTable tradersTable,
+        GlobalTable globalTable,
+        HideoutTable hideoutTable,
+        LocaleTable localeTable,
+        CustomItemService customItemService,
+        ICloner cloner,
+        ModHelper modHelper)
     {
         _logger = logger;
-        _databaseService = databaseService;
+        _templateTable = templateTable;
+        _tradersTable = tradersTable;
+        _globalTable = globalTable;
+        _hideoutTable = hideoutTable;
+        _localeTable = localeTable;
         _customItemService = customItemService;
         _cloner = cloner;
         _modHelper = modHelper;
-        _jsonUtil = jsonUtil;
-        _fileUtil = fileUtil;
-        _handbookHelper = handbookHelper;
     }
     public void OnLoad()
     {
-        DBItems = _databaseService.GetItems();
-        DBTraders = _databaseService.GetTraders();
-        DBGlobals = _databaseService.GetGlobals();
-        DBPreset = _databaseService.GetGlobals().ItemPresets;
+        DBItems = _templateTable.Items;
+        DBGlobals = _globalTable;
+        DBPreset = _globalTable.ItemPresets;
         pathToMod = _modHelper.GetAbsolutePathToModFolder(Assembly.GetExecutingAssembly());
-        DBHandbook = _databaseService.GetHandbook().Items;
-        DBBuff = _databaseService.GetGlobals().Configuration.Health.Effects.Stimulator.Buffs;
-        DBCrafts = _databaseService.GetHideout().Production.Recipes;
-        DBlocales = _databaseService.GetLocales();
+        DBHandbook = _templateTable.Handbook.Items;
+        DBBuff = _globalTable.Configuration.Health.Effects.Stimulator.Buffs;
+        DBCrafts = _hideoutTable.Production.Recipes;
+        DBlocales = _localeTable;
         InfoCompatibilityMapping.Add(strAmmo, new Dictionary<MongoId, List<MongoId>>());
         InfoCompatibilityMapping.Add(strAllSlots, new Dictionary<MongoId, List<MongoId>>());
         InfoCompatibilityMapping.Add(strConfilctingItems, new Dictionary<MongoId, List<MongoId>>());
@@ -129,7 +139,7 @@ public class MassivesoftCoreClass
             _logger.Error($"AdvancedCreateItemFromClone: Id {details.NewId} duplicated!");
             return;
         }
-        if (details.ItemTplToClone == null)
+        if (details.ItemTplToClone == MongoId.Empty())
         {
             _logger.Error($"AdvancedCreateItemFromClone: AdvancedNewItemFromCloneDetails of id {details.NewId} has null ItemTplToClone!");
             return;
@@ -140,7 +150,15 @@ public class MassivesoftCoreClass
             return;
         }
 
-        details.ParentId ??= DBItems![details.ItemTplToClone.ToString()!].Parent;
+        if (details.ParentId == MongoId.Empty())
+        {
+            details.ParentId = DBItems![details.ItemTplToClone.ToString()!].Parent;
+        }
+
+        if (string.IsNullOrEmpty(details.NewItemName))
+        {
+            details.NewItemName = details.OverrideProperties?.Name ?? details.NewId.ToString();
+        }
 
         if (details.HandbookParentId == null)
         {
@@ -207,7 +225,7 @@ public class MassivesoftCoreClass
         }
         if (details.AddtoModSlots)
         {
-            if (details.ItemTplToClone == null)
+            if (details.ItemTplToClone == MongoId.Empty())
             {
                 _logger.Error($"AdvancedCreateItemFromClone: AdvancedNewItemFromCloneDetails of id {details.NewId} has invalid ItemTplToClone!");
             }
@@ -701,8 +719,8 @@ public class MassivesoftCoreClass
     {
         try
         {
-            trader = DBTraders![new MongoId(traderId)];
-            return true;
+            trader = _tradersTable.GetTrader(new MongoId(traderId));
+            return trader != null;
         }
         catch (KeyNotFoundException)
         {
@@ -1050,6 +1068,14 @@ public class MassivesoftCoreClass
 }
 public record AdvancedNewItemFromCloneDetails : NewItemFromCloneDetails
 {
+    // SPT 4.1 made NewItemName/ParentId required; legacy JSONs omit them, so they are defaulted here and resolved in AdvancedCreateItemFromClone.
+    [JsonConstructor]
+    [System.Diagnostics.CodeAnalysis.SetsRequiredMembers]
+    public AdvancedNewItemFromCloneDetails()
+    {
+        NewItemName = string.Empty;
+        ParentId = MongoId.Empty();
+    }
 
     //Trade infos
     [JsonPropertyName("addtoTraders")]
@@ -1176,11 +1202,6 @@ public record AdvancedNewItemFromCloneDetails : NewItemFromCloneDetails
     [JsonPropertyName("addToHolsterWeaponSlot")]
     public virtual bool AddToHolsterWeaponSlot { get; set; } = false;
 
-    //Aditional 
-    [JsonPropertyName("newId")]
-    public override required string NewId { get; set; }
-
-
 }
 public record ConflictingInfos
 {
@@ -1224,13 +1245,6 @@ public record MasterySection
 public record DeserializationBarterScheme : BarterScheme
 {
     private static readonly MongoId DefaultTemplate = Money.ROUBLES;
-
-    [JsonPropertyName("_tpl")]
-    public override MongoId Template
-    {
-        get => base.Template;
-        set => base.Template = value;
-    }
 
     public DeserializationBarterScheme()
     {
